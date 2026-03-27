@@ -18,6 +18,7 @@ This repository includes four modules, each demonstrating a different aspect of 
 
 - **[Knowledge-Grounded QA Agent](implementations/knowledge_qa/README.md)**
   A ReAct agent using Google ADK and Google Search to answer questions grounded in live web content. Evaluated on the DeepSearchQA benchmark using LLM-as-a-judge metrics.
+  - TR build-phase update: [Day 3 Report](implementations/tr_knowledge_qa/DAY3_BUILD_PHASE_REPORT.md)
 
 - **[AML Investigation Agent](implementations/aml_investigation/README.md)**
   An agent that investigates Anti-Money Laundering cases by querying a SQLite database of financial transactions via a read-only SQL tool. Produces structured analysis and supports batch evaluation.

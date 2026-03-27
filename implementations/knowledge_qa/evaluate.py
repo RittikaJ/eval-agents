@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Evaluate the Knowledge Agent using Langfuse experiments.
 
 This script runs the Knowledge Agent against a Langfuse dataset and evaluates
@@ -24,28 +26,86 @@ import os
 from typing import Any
 
 import click
-from aieng.agent_evals.async_client_manager import AsyncClientManager
-from aieng.agent_evals.evaluation import run_experiment, run_experiment_with_trace_evals
-from aieng.agent_evals.evaluation.graders import create_trace_groundedness_evaluator
-from aieng.agent_evals.evaluation.graders.config import LLMRequestConfig
-from aieng.agent_evals.evaluation.types import EvaluationResult
-from aieng.agent_evals.knowledge_qa.agent import KnowledgeGroundedAgent
-from aieng.agent_evals.knowledge_qa.deepsearchqa_grader import DeepSearchQAResult, evaluate_deepsearchqa_async
-from aieng.agent_evals.logging_config import setup_logging
 from dotenv import load_dotenv
-from langfuse.experiment import Evaluation, ExperimentResult
+
+try:
+    from aieng.agent_evals.async_client_manager import AsyncClientManager
+    from aieng.agent_evals.evaluation import run_experiment, run_experiment_with_trace_evals
+    from aieng.agent_evals.evaluation.graders import create_trace_groundedness_evaluator
+    from aieng.agent_evals.evaluation.graders.config import LLMRequestConfig
+    from aieng.agent_evals.evaluation.types import EvaluationResult
+    from aieng.agent_evals.knowledge_qa.agent import KnowledgeGroundedAgent
+    from aieng.agent_evals.knowledge_qa.deepsearchqa_grader import DeepSearchQAResult, evaluate_deepsearchqa_async
+    from aieng.agent_evals.logging_config import setup_logging
+    from langfuse.experiment import Evaluation, ExperimentResult
+
+    RUNTIME_IMPORT_ERROR: ModuleNotFoundError | None = None
+except ModuleNotFoundError as exc:
+    AsyncClientManager = None  # type: ignore[assignment]
+    run_experiment = None  # type: ignore[assignment]
+    run_experiment_with_trace_evals = None  # type: ignore[assignment]
+    create_trace_groundedness_evaluator = None  # type: ignore[assignment]
+    LLMRequestConfig = None  # type: ignore[assignment]
+    EvaluationResult = None  # type: ignore[assignment]
+    KnowledgeGroundedAgent = None  # type: ignore[assignment]
+    DeepSearchQAResult = None  # type: ignore[assignment]
+    evaluate_deepsearchqa_async = None  # type: ignore[assignment]
+    setup_logging = None  # type: ignore[assignment]
+    Evaluation = None  # type: ignore[assignment]
+    ExperimentResult = None  # type: ignore[assignment]
+    RUNTIME_IMPORT_ERROR = exc
 
 
 load_dotenv(verbose=True)
-setup_logging(level=logging.INFO, show_time=True, show_path=False)
+if setup_logging is not None:
+    setup_logging(level=logging.INFO, show_time=True, show_path=False)
 logger = logging.getLogger(__name__)
 
 
 DEFAULT_DATASET_NAME = "DeepSearchQA-Subset"
 DEFAULT_EXPERIMENT_NAME = "Knowledge Agent Evaluation"
 
+VALID_MILESTONES = {"day1", "day2", "day3"}
+
+MILESTONE_EXPERIMENT_SUFFIX = {
+    "day1": "Day 1",
+    "day2": "Day 2",
+    "day3": "Day 3",
+}
+
 # Configuration for trace groundedness evaluation
 ENABLE_TRACE_GROUNDEDNESS = os.getenv("ENABLE_TRACE_GROUNDEDNESS", "false").lower() in ("true", "1", "yes")
+
+
+def _require_runtime_dependencies() -> None:
+    """Raise a clear error when optional eval dependencies are not installed."""
+    if RUNTIME_IMPORT_ERROR is None:
+        return
+
+    raise RuntimeError(
+        "Missing runtime dependencies for Knowledge QA evaluation. "
+        "Install project dependencies (for example `uv sync`), then retry. "
+        f"Original import error: {RUNTIME_IMPORT_ERROR}"
+    )
+
+
+def _coerce_milestone(value: str | None) -> str:
+    """Normalize milestone value and validate supported options."""
+    normalized = (value or "none").strip().lower()
+    if normalized not in VALID_MILESTONES:
+        valid = ", ".join(sorted(VALID_MILESTONES))
+        raise ValueError(f"Invalid milestone '{value}'. Expected one of: {valid}")
+    return normalized
+
+
+def _build_experiment_name(base_name: str, milestone: str) -> str:
+    """Append milestone suffix to experiment name when requested."""
+    suffix = MILESTONE_EXPERIMENT_SUFFIX[milestone]
+    if not suffix:
+        return base_name
+    if base_name.endswith(f"[{suffix}]"):
+        return base_name
+    return f"{base_name} [{suffix}]"
 
 
 async def agent_task(*, item: Any, **kwargs: Any) -> str:  # noqa: ARG001
@@ -64,11 +124,28 @@ async def agent_task(*, item: Any, **kwargs: Any) -> str:  # noqa: ARG001
         The agent's answer text. Rich execution data (plan, tool calls,
         sources, reasoning chain) is attached to the Langfuse span metadata.
     """
+    _require_runtime_dependencies()
     question = item.input
+    agent_model = kwargs.get("agent_model")
+    enable_planning = kwargs.get("enable_planning", True)
+    thinking_budget = kwargs.get("thinking_budget", 8192)
+    component_tags = kwargs.get("component_tags", {})
+
+    # Coerce dynamic values passed from CLI to safe defaults.
+    try:
+        thinking_budget = int(thinking_budget)
+    except (TypeError, ValueError):
+        thinking_budget = 8192
+
+    enable_planning = bool(enable_planning)
     logger.info(f"Running agent on: {question[:80]}...")
 
     try:
-        agent = KnowledgeGroundedAgent(enable_planning=True)  # type: ignore[call-arg]
+        agent = KnowledgeGroundedAgent(
+            model=agent_model,
+            enable_planning=enable_planning,
+            thinking_budget=thinking_budget,
+        )  # type: ignore[call-arg]
         response = await agent.answer_async(question)
         logger.info(f"Agent completed: {len(response.text)} chars, {len(response.tool_calls)} tool calls")
 
@@ -76,7 +153,15 @@ async def agent_task(*, item: Any, **kwargs: Any) -> str:  # noqa: ARG001
         # in Langfuse without cluttering the output field.
         client_manager = AsyncClientManager.get_instance()
         client_manager.langfuse_client.update_current_span(
-            metadata=response.model_dump(exclude={"text"}),
+            metadata={
+                **response.model_dump(exclude={"text"}),
+                "component_tags": component_tags,
+                "agent_variant": {
+                    "model": agent.model,
+                    "enable_planning": enable_planning,
+                    "thinking_budget": thinking_budget,
+                },
+            },
         )
 
         return response.text
@@ -116,6 +201,7 @@ async def deepsearchqa_evaluator(
     list[Evaluation]
         List of Langfuse Evaluations with F1, precision, recall, and outcome scores.
     """
+    _require_runtime_dependencies()
     output_text = str(output)
     answer_type = metadata.get("answer_type", "Set Answer") if metadata else "Set Answer"
 
@@ -145,6 +231,12 @@ async def run_evaluation(
     experiment_name: str,
     max_concurrency: int = 1,
     enable_trace_groundedness: bool = False,
+    *,
+    milestone: str = "none",
+    agent_model: str | None = None,
+    enable_planning: bool = True,
+    thinking_budget: int = 8192,
+    component_tags: dict[str, str] | None = None,
 ) -> ExperimentResult | EvaluationResult:
     """Run the full evaluation experiment.
 
@@ -158,13 +250,48 @@ async def run_evaluation(
         Maximum concurrent agent runs, by default 1.
     enable_trace_groundedness : bool, optional
         Whether to enable trace-level groundedness evaluation, by default False.
+    milestone : str, optional
+        Optional run milestone tag used in experiment naming (none|day2|day3).
+    agent_model : str | None, optional
+        Override model for KnowledgeGroundedAgent. Uses default when None.
+    enable_planning : bool, optional
+        Whether to enable planning in the agent, by default True.
+    thinking_budget : int, optional
+        Thinking budget for planning-capable models, by default 8192.
+    component_tags : dict[str, str] | None, optional
+        Additional tags to store in span metadata for planner/retrieval/synthesis attribution.
     """
+    _require_runtime_dependencies()
     client_manager = AsyncClientManager.get_instance()
+    normalized_milestone = _coerce_milestone(milestone)
+    run_name = _build_experiment_name(experiment_name, normalized_milestone)
+    tags = component_tags or {
+        "planner": "planner",
+        "retrieval": "retrieval",
+        "synthesis": "synthesis",
+    }
+
+    async def configured_agent_task(*, item: Any, **kwargs: Any) -> str:
+        return await agent_task(
+            item=item,
+            agent_model=agent_model,
+            enable_planning=enable_planning,
+            thinking_budget=thinking_budget,
+            component_tags=tags,
+            **kwargs,
+        )
 
     try:
-        logger.info(f"Starting experiment '{experiment_name}' on dataset '{dataset_name}'")
+        logger.info(f"Starting experiment '{run_name}' on dataset '{dataset_name}'")
         logger.info(f"Max concurrency: {max_concurrency}")
         logger.info(f"Trace groundedness: {'enabled' if enable_trace_groundedness else 'disabled'}")
+        logger.info(
+            "Agent variant: model=%s planning=%s thinking_budget=%s milestone=%s",
+            agent_model or "<default>",
+            enable_planning,
+            thinking_budget,
+            normalized_milestone,
+        )
 
         result: ExperimentResult | EvaluationResult
         if enable_trace_groundedness:
@@ -178,9 +305,9 @@ async def run_evaluation(
             # Run with trace evaluations
             result = run_experiment_with_trace_evals(
                 dataset_name=dataset_name,
-                name=experiment_name,
+                name=run_name,
                 description="Knowledge Agent evaluation with DeepSearchQA judge and trace groundedness",
-                task=agent_task,
+                task=configured_agent_task,
                 evaluators=[deepsearchqa_evaluator],  # Item-level evaluators
                 trace_evaluators=[groundedness_evaluator],  # Trace-level evaluators
                 max_concurrency=max_concurrency,
@@ -189,9 +316,9 @@ async def run_evaluation(
             # Run without trace evaluations
             result = run_experiment(
                 dataset_name=dataset_name,
-                name=experiment_name,
+                name=run_name,
                 description="Knowledge Agent evaluation with DeepSearchQA judge",
-                task=agent_task,
+                task=configured_agent_task,
                 evaluators=[deepsearchqa_evaluator],
                 max_concurrency=max_concurrency,
             )
@@ -241,19 +368,115 @@ async def run_evaluation(
     help="Maximum concurrent agent runs (default: 1).",
 )
 @click.option(
+    "--milestone",
+    default="none",
+    type=click.Choice(["none", "day2", "day3"], case_sensitive=False),
+    help="Optional milestone suffix in experiment name (none|day2|day3).",
+)
+@click.option(
+    "--agent-model",
+    default=None,
+    help="Optional model override for KnowledgeGroundedAgent.",
+)
+@click.option(
+    "--disable-planning",
+    is_flag=True,
+    default=False,
+    help="Disable built-in planning to compare PlanReAct impact.",
+)
+@click.option(
+    "--thinking-budget",
+    default=8192,
+    type=int,
+    help="Thinking budget for planning-capable models.",
+)
+@click.option(
+    "--component-tag",
+    "component_tags_raw",
+    multiple=True,
+    help="Component tag mapping in key=value form, e.g. planner=planner_v2.",
+)
+@click.option(
     "--enable-trace-groundedness",
     is_flag=True,
     default=ENABLE_TRACE_GROUNDEDNESS,
     help="Enable trace-level groundedness evaluation.",
 )
-def cli(dataset_name: str, experiment_name: str, max_concurrency: int, enable_trace_groundedness: bool) -> None:
+@click.option(
+    "--run-variant-sweep",
+    is_flag=True,
+    default=False,
+    help="Run a 3-variant comparison sweep (top-level experiment names only).",
+)
+def cli(
+    dataset_name: str,
+    experiment_name: str,
+    max_concurrency: int,
+    milestone: str,
+    agent_model: str | None,
+    disable_planning: bool,
+    thinking_budget: int,
+    component_tags_raw: tuple[str, ...],
+    enable_trace_groundedness: bool,
+    run_variant_sweep: bool,
+) -> None:
     """Run Knowledge Agent evaluation using Langfuse experiments."""
+    _require_runtime_dependencies()
+
+    component_tags: dict[str, str] = {}
+    for item in component_tags_raw:
+        if "=" not in item:
+            raise click.BadParameter(
+                f"Invalid --component-tag '{item}'. Expected key=value.",
+                param_hint="--component-tag",
+            )
+        key, value = item.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or not value:
+            raise click.BadParameter(
+                f"Invalid --component-tag '{item}'. Expected non-empty key=value.",
+                param_hint="--component-tag",
+            )
+        component_tags[key] = value
+
+    planning_enabled = not disable_planning
+
+    if run_variant_sweep:
+        variants = [
+            (f"{experiment_name}-baseline", planning_enabled, thinking_budget),
+            (f"{experiment_name}-no-planning", False, thinking_budget),
+            (f"{experiment_name}-high-thinking", planning_enabled, max(thinking_budget, 12288)),
+        ]
+
+        async def _run_sweep() -> None:
+            for variant_name, variant_planning, variant_thinking in variants:
+                await run_evaluation(
+                    dataset_name,
+                    variant_name,
+                    max_concurrency,
+                    enable_trace_groundedness,
+                    milestone=milestone,
+                    agent_model=agent_model,
+                    enable_planning=variant_planning,
+                    thinking_budget=variant_thinking,
+                    component_tags=component_tags or None,
+                )
+
+        asyncio.run(_run_sweep())
+        return
+
     asyncio.run(
         run_evaluation(
             dataset_name,
             experiment_name,
             max_concurrency,
             enable_trace_groundedness,
+            milestone=milestone,
+            agent_model=agent_model,
+            enable_planning=planning_enabled,
+            thinking_budget=thinking_budget,
+            component_tags=component_tags or None,
         )
     )
 

@@ -58,22 +58,31 @@ print(f"Tool calls: {response.tool_calls}")
 Use the main evaluation script to run comprehensive evaluations:
 
 ```bash
-# Run evaluation on 3 samples
-python implementations/knowledge_qa/evaluate.py --samples 3
+# Run evaluation with defaults
+python implementations/knowledge_qa/evaluate.py
 
-# Run with specific example IDs
-python implementations/knowledge_qa/evaluate.py --ids 123 456 789
+# Run with custom dataset and experiment name
+python implementations/knowledge_qa/evaluate.py --dataset-name "DeepSearchQA" --experiment-name "TR-KnowledgeQA-Baseline"
 
 # Enable trace groundedness evaluation
 ENABLE_TRACE_GROUNDEDNESS=true python implementations/knowledge_qa/evaluate.py
+
+# Add milestone suffix for day-level tracking
+python implementations/knowledge_qa/evaluate.py --dataset-name "DeepSearchQA" --experiment-name "TR-KnowledgeQA-Full" --milestone day3 --max-concurrency 5
+
+# Compare three variants in one command
+python implementations/knowledge_qa/evaluate.py --dataset-name "DeepSearchQA" --experiment-name "TR-KnowledgeQA-Variants" --run-variant-sweep
+
+# Attach planner/retrieval/synthesis tags to span metadata
+python implementations/knowledge_qa/evaluate.py --component-tag planner=planner --component-tag retrieval=retrieval --component-tag synthesis=synthesis
 ```
 
 Or use the CLI:
 
 ```bash
 # Run evaluation via CLI
-uv run --env-file .env knowledge-qa eval --samples 3
-uv run --env-file .env knowledge-qa eval --ids 123 456 --show-plan
+uv run --env-file .env python implementations/knowledge_qa/evaluate.py --dataset-name "DeepSearchQA" --experiment-name "TR-KnowledgeQA-Baseline"
+uv run --env-file .env python implementations/knowledge_qa/evaluate.py --dataset-name "DeepSearchQA" --experiment-name "TR-KnowledgeQA-Variants" --run-variant-sweep --max-concurrency 5
 ```
 
 ## Run with ADK Web UI

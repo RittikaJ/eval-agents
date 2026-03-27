@@ -14,6 +14,10 @@ This is a custom implementation that combines the **Knowledge QA reference imple
 
 Run them in order — `02` and `03` depend on the Langfuse dataset created in `02`.
 
+## Build Phase Reports
+
+- `DAY3_BUILD_PHASE_REPORT.md`: Day 2 to Day 3 objective, achievements, challenges, and lessons learned.
+
 ## What's Different From the Standard Knowledge QA
 
 The standard `knowledge_qa` implementation evaluates only the **final answer** (Precision/Recall/F1).
@@ -44,6 +48,22 @@ EXPERIMENT_NAME = 'tr-baseline-v1'        # Change this for each new experiment 
 ### Running Multiple Experiments
 
 Update `EXPERIMENT_NAME` and re-run from the config cell. Each run creates a new named experiment in Langfuse — compare them side-by-side under **Datasets → TR-DeepSearchQA**.
+
+### Full Offline Run and Variant Comparison
+
+Use the shared evaluator script to reproduce Day 3 style runs:
+
+```bash
+python implementations/knowledge_qa/evaluate.py --dataset-name "DeepSearchQA" --experiment-name "TR-KnowledgeQA-Full" --milestone day3 --max-concurrency 5
+
+python implementations/knowledge_qa/evaluate.py --dataset-name "DeepSearchQA" --experiment-name "TR-KnowledgeQA-Variants" --milestone day3 --max-concurrency 5 --run-variant-sweep
+```
+
+Optional: add trace-level groundedness in the same run:
+
+```bash
+python implementations/knowledge_qa/evaluate.py --dataset-name "DeepSearchQA" --experiment-name "TR-KnowledgeQA-Full" --milestone day3 --max-concurrency 5 --enable-trace-groundedness
+```
 
 ## Prerequisites
 
